@@ -219,21 +219,31 @@ func handleRegistryLookup(
 	_ context.Context,
 	serverOrImage string,
 ) (string, *types.ImageMetadata, types.ServerMetadata, error) {
-	var imageMetadata *types.ImageMetadata
-	var imageToUse string
-
 	// Try to find the server in the registry
 	provider, err := registry.GetDefaultProvider()
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("failed to get registry provider: %w", err)
 	}
 
+	imageToUse, imageMetadata, server := lookupServer(provider, serverOrImage)
+	return imageToUse, imageMetadata, server, nil
+}
+
+// lookupServer falls back to using serverOrImage as a direct image reference
+// when the registry cannot resolve it.
+func lookupServer(
+	provider registry.Provider,
+	serverOrImage string,
+) (string, *types.ImageMetadata, types.ServerMetadata) {
+	var imageMetadata *types.ImageMetadata
+	var imageToUse string
+
 	// First check if the server exists and whether it's remote
 	server, err := provider.GetServer(serverOrImage)
 	if err == nil {
 		// Server found, check if it's remote
 		if server.IsRemote() {
-			return serverOrImage, nil, server, nil
+			return serverOrImage, nil, server
 		}
 		// It's a container server, get the ImageMetadata
 		if imgMeta, ok := server.(*types.ImageMetadata); ok {
@@ -244,13 +254,17 @@ func handleRegistryLookup(
 			slog.Debug("ImageMetadata not found in registry: could not cast", "server", serverOrImage)
 			imageToUse = serverOrImage
 		}
-	} else {
+	} else if errors.Is(err, registry.ErrServerNotFound) {
 		// Server not found in registry, treat as a direct image reference
 		slog.Debug("Server not found in registry", "server", serverOrImage, "error", err)
 		imageToUse = serverOrImage
+	} else {
+		slog.Warn("Could not resolve server via registry, attempting as image reference",
+			"server", serverOrImage, "error", err)
+		imageToUse = serverOrImage
 	}
 
-	return imageToUse, imageMetadata, nil, nil
+	return imageToUse, imageMetadata, nil
 }
 
 // pullImage pulls an image from a remote registry if it has the "latest" tag

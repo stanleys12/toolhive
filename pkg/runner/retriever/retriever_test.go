@@ -4,15 +4,21 @@
 package retriever
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/container/verifier"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/registry"
+	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -52,6 +58,47 @@ func TestResolveMCPServer_WithoutGroup(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotEmpty(t, imageURL)
 	assert.NotNil(t, serverMetadata)
+}
+
+//nolint:paralleltest // swaps the global slog default
+func TestLookupServer_FallbackLogging(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	tests := []struct {
+		name       string
+		err        error
+		expectWarn bool
+	}{
+		{
+			name: "not found does not warn",
+			err:  fmt.Errorf("%w: fetch", registry.ErrServerNotFound),
+		},
+		{
+			name:       "lookup failure warns",
+			err:        errors.New("connection refused"),
+			expectWarn: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			buf.Reset()
+			provider := registrymocks.NewMockProvider(gomock.NewController(t))
+			provider.EXPECT().GetServer("fetch").Return(nil, tt.err)
+
+			imageToUse, _, _ := lookupServer(provider, "fetch")
+
+			assert.Equal(t, "fetch", imageToUse)
+			if tt.expectWarn {
+				assert.Contains(t, buf.String(), "connection refused")
+			} else {
+				assert.Empty(t, buf.String())
+			}
+		})
+	}
 }
 
 func TestResolveCACertPath(t *testing.T) {
